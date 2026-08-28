@@ -5,7 +5,7 @@ app.registerExtension({
   name: "h3.latent.upload.workflow",
 
   async beforeRegisterNodeDef(nodeType, nodeData) {
-    if (nodeData.name !== "H3LatentUploadPath") return;
+    if (!["H3LatentUploadPath", "H3OptionalLatentUploadLoader"].includes(nodeData.name)) return;
 
     const originalCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
