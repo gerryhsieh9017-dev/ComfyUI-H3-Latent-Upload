@@ -27,3 +27,26 @@ continuation in one branch.
 The enable check deliberately lives inside the loader. A normal downstream
 switch may still evaluate both upstream branches in ComfyUI, which can otherwise
 trigger a disabled file loader or even compute two video-generation branches.
+
+## Safe External LoRA nodes
+
+`H3 External LoRA Settings (Safe)` exposes a direct `.safetensors` URL, a local
+cache filename, and an optional bearer token. It only passes strings and never
+downloads by itself.
+
+`H3 Safe External LoRA Apply (Model)` combines the enable check, download,
+validation, and model patch in one node:
+
+- `enable_lora = false`: returns the original model immediately without network
+  access, filesystem access, a LoRA model-list lookup, or an upstream download.
+- `enable_lora = true`: downloads to `input/h3_external_loras`, first writing a
+  `.part` file and then atomically renaming it. The file is loaded with ComfyUI's
+  safe loader and applied directly to the connected model.
+- Public Hugging Face repositories need no token. A private repository needs a
+  fine-grained/read token in `bearer_token` for the current session.
+- Never commit a workflow while a bearer token is present. Clear it after use.
+- HTTP 401/403, empty downloads, and invalid `.safetensors` files fail before
+  sampling with a specific error and do not leave a partial cache file.
+
+This avoids relying on a Machine's first registered `models/loras` directory or
+on a `lora_name` COMBO value being present in its current model index.

@@ -1,9 +1,15 @@
 import os
 import re
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 import folder_paths
 from aiohttp import web
 from server import PromptServer
+
+import comfy.sd
+import comfy.utils
 
 try:
     from safetensors.torch import load_file as _st_load
@@ -13,6 +19,7 @@ except Exception:
 
 _UPLOAD_SUBFOLDER = "h3_latents"
 _UPLOAD_REQUIRED = "(upload required)"
+_LORA_CACHE_SUBFOLDER = "h3_external_loras"
 
 
 def _safe_latent_name(filename):
@@ -188,6 +195,209 @@ class H3OptionalLatentUploadLoader:
             return "disabled"
         if not latent_file or latent_file == _UPLOAD_REQUIRED:
             return float("NaN")
+
+
+def _safe_lora_name(filename):
+    name = os.path.basename(filename or "character_lora.safetensors")
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", name)
+    if not name.lower().endswith(".safetensors"):
+        raise ValueError("External LoRA save name must end with .safetensors.")
+    return name
+
+
+class H3ExternalLoRASettings:
+    """Non-downloading UI bridge for URL, cache name, and optional HF token."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "lora_url": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "multiline": False,
+                        "tooltip": "Direct Hugging Face resolve/main URL.",
+                    },
+                ),
+                "lora_save_name": (
+                    "STRING",
+                    {"default": "character_lora.safetensors"},
+                ),
+                "bearer_token": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "multiline": False,
+                        "tooltip": (
+                            "Private repo: paste a read-only token for this Session only. "
+                            "Do not Commit a workflow containing a token."
+                        ),
+                    },
+                ),
+            }
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "STRING")
+    RETURN_NAMES = ("lora_url", "lora_save_name", "bearer_token")
+    FUNCTION = "settings"
+    CATEGORY = "loaders/minimax"
+    DESCRIPTION = (
+        "Stores External LoRA settings only. It never downloads a file by itself. "
+        "The paired Safe External LoRA Apply node downloads only when Enable is ON."
+    )
+
+    def settings(self, lora_url, lora_save_name, bearer_token):
+        return (lora_url.strip(), _safe_lora_name(lora_save_name), bearer_token.strip())
+
+
+class H3SafeExternalLoRAApplyModel:
+    """Download and apply an external LoRA only when explicitly enabled.
+
+    The official ComfyDeploy External LoRA node writes to the first registered
+    LoRA directory. On some Machines that path is absent even though the actual
+    private-model path exists. This node intentionally caches under ComfyUI's
+    input directory, creates its own directory, checks HTTP failures, writes
+    atomically, validates with ComfyUI's safe loader, and applies the state dict
+    directly. No COMBO/model-list refresh is involved.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model": ("MODEL",),
+                "enable_lora": ("BOOLEAN", {"default": False}),
+                "lora_url": ("STRING", {"default": ""}),
+                "lora_save_name": (
+                    "STRING",
+                    {"default": "character_lora.safetensors"},
+                ),
+                "bearer_token": ("STRING", {"default": ""}),
+                "strength_model": (
+                    "FLOAT",
+                    {"default": 1.0, "min": -4.0, "max": 4.0, "step": 0.01},
+                ),
+            }
+        }
+
+    RETURN_TYPES = ("MODEL",)
+    RETURN_NAMES = ("model",)
+    FUNCTION = "apply"
+    CATEGORY = "loaders/minimax"
+    DESCRIPTION = (
+        "OFF returns the original model without network or file access. ON downloads "
+        "a direct .safetensors URL into input/h3_external_loras and applies it."
+    )
+
+    @staticmethod
+    def _http_error(status):
+        if status in (401, 403):
+            return RuntimeError(
+                "External LoRA download was denied (HTTP %s). For a private "
+                "Hugging Face repository, paste a fine-grained/read token into "
+                "bearer_token for this Session. Do not Commit the token." % status
+            )
+        return RuntimeError("External LoRA download failed with HTTP %s." % status)
+
+    def _download(self, url, destination, bearer_token):
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError(
+                "External LoRA URL must be a direct http(s) .safetensors URL."
+            )
+
+        headers = {}
+        if bearer_token:
+            headers["Authorization"] = f"Bearer {bearer_token}"
+
+        temporary = destination + ".part"
+        if os.path.exists(temporary):
+            os.remove(temporary)
+        try:
+            request = Request(url, headers=headers)
+            try:
+                response = urlopen(request, timeout=300)
+            except HTTPError as exc:
+                raise self._http_error(exc.code) from exc
+            except URLError as exc:
+                raise RuntimeError(
+                    f"External LoRA download could not connect: {exc.reason}"
+                ) from exc
+            with response, open(temporary, "wb") as handle:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+            if not os.path.isfile(temporary) or os.path.getsize(temporary) < 16:
+                raise ValueError("External LoRA download was empty or incomplete.")
+            os.replace(temporary, destination)
+        finally:
+            if os.path.exists(temporary):
+                os.remove(temporary)
+
+    def _load_or_download(self, lora_url, lora_save_name, bearer_token):
+        cache_dir = os.path.join(
+            folder_paths.get_input_directory(), _LORA_CACHE_SUBFOLDER
+        )
+        os.makedirs(cache_dir, exist_ok=True)
+        destination = os.path.join(cache_dir, _safe_lora_name(lora_save_name))
+
+        if os.path.isfile(destination):
+            try:
+                return comfy.utils.load_torch_file(destination, safe_load=True)
+            except Exception:
+                os.remove(destination)
+
+        self._download(lora_url, destination, bearer_token)
+        try:
+            return comfy.utils.load_torch_file(destination, safe_load=True)
+        except Exception as exc:
+            if os.path.exists(destination):
+                os.remove(destination)
+            raise ValueError(
+                "Downloaded file is not a valid safe LoRA .safetensors file. "
+                "Check the direct URL, repository access, and LoRA file."
+            ) from exc
+
+    def apply(
+        self,
+        model,
+        enable_lora,
+        lora_url,
+        lora_save_name,
+        bearer_token,
+        strength_model,
+    ):
+        if not enable_lora:
+            return (model,)
+        if not lora_url or not lora_url.strip():
+            raise ValueError(
+                "External LoRA is enabled, but lora_url is empty. Paste a direct "
+                "Hugging Face resolve/main URL or turn Enable LoRA OFF."
+            )
+        state_dict = self._load_or_download(
+            lora_url.strip(), lora_save_name, bearer_token.strip()
+        )
+        patched_model, _ = comfy.sd.load_lora_for_models(
+            model, None, state_dict, strength_model, 0
+        )
+        return (patched_model,)
+
+    @classmethod
+    def IS_CHANGED(
+        cls,
+        model,
+        enable_lora,
+        lora_url,
+        lora_save_name,
+        bearer_token,
+        strength_model,
+    ):
+        if not enable_lora:
+            return "disabled"
+        return f"{lora_url}|{lora_save_name}|{strength_model}"
         try:
             path = folder_paths.get_annotated_filepath(latent_file)
             return f"{path}:{os.stat(path).st_mtime_ns}"
@@ -198,11 +408,15 @@ class H3OptionalLatentUploadLoader:
 NODE_CLASS_MAPPINGS = {
     "H3LatentUploadPath": H3LatentUploadPath,
     "H3OptionalLatentUploadLoader": H3OptionalLatentUploadLoader,
+    "H3ExternalLoRASettings": H3ExternalLoRASettings,
+    "H3SafeExternalLoRAApplyModel": H3SafeExternalLoRAApplyModel,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "H3LatentUploadPath": "H3 Latent Upload (Workflow)",
     "H3OptionalLatentUploadLoader": "H3 Optional Context Latent Upload + Load",
+    "H3ExternalLoRASettings": "H3 External LoRA Settings (Safe)",
+    "H3SafeExternalLoRAApplyModel": "H3 Safe External LoRA Apply (Model)",
 }
 
 WEB_DIRECTORY = "./web"
