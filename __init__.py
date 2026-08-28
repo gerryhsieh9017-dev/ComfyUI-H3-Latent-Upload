@@ -5,6 +5,11 @@ import folder_paths
 from aiohttp import web
 from server import PromptServer
 
+try:
+    from safetensors.torch import load_file as _st_load
+except Exception:
+    _st_load = None
+
 
 _UPLOAD_SUBFOLDER = "h3_latents"
 _UPLOAD_REQUIRED = "(upload required)"
@@ -102,12 +107,102 @@ class H3LatentUploadPath:
         return True
 
 
+class H3OptionalLatentUploadLoader:
+    """Load an uploaded H3 context latent only when explicitly enabled.
+
+    Returning ``None`` while disabled is intentional: H3 Motion Context marks
+    ``context_latent`` as optional and then falls back to the connected MP4
+    frames/audio.  Keeping the enable check inside this node avoids ComfyUI
+    evaluating an unused file-loader branch before a downstream switch.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        input_dir = folder_paths.get_input_directory()
+        files = []
+        for root, _, names in os.walk(input_dir):
+            for name in names:
+                if name.lower().endswith(".safetensors"):
+                    full_path = os.path.join(root, name)
+                    files.append(
+                        os.path.relpath(full_path, input_dir).replace(os.sep, "/")
+                    )
+        return {
+            "required": {
+                "use_context_latent": ("BOOLEAN", {"default": False}),
+                "latent_file": ([_UPLOAD_REQUIRED, *sorted(files)],),
+            }
+        }
+
+    RETURN_TYPES = ("LATENT",)
+    RETURN_NAMES = ("optional_context_latent",)
+    FUNCTION = "load_optional"
+    CATEGORY = "conditioning/minimax"
+    DESCRIPTION = (
+        "When disabled, returns no Context Latent and lets H3 Motion Context "
+        "use the previous MP4 frames/audio. When enabled, loads the uploaded "
+        "H3 video+audio .safetensors file."
+    )
+
+    def load_optional(self, use_context_latent, latent_file):
+        if not use_context_latent:
+            return (None,)
+        if _st_load is None:
+            raise RuntimeError(
+                "safetensors is unavailable; cannot load the H3 Context Latent."
+            )
+        if not latent_file or latent_file == _UPLOAD_REQUIRED:
+            raise FileNotFoundError(
+                "Context Latent is enabled. Upload the previous H3 .safetensors file."
+            )
+        path = folder_paths.get_annotated_filepath(latent_file)
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"H3 Context Latent not found: {latent_file}")
+        data = _st_load(path)
+        if "video" not in data or "audio" not in data:
+            raise ValueError(
+                "The selected file is not an H3 Motion Context latent "
+                "(video/audio tensors are required)."
+            )
+        return ({"samples": [data["video"], data["audio"]]},)
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, use_context_latent, latent_file):
+        if not use_context_latent:
+            return True
+        if not latent_file or latent_file == _UPLOAD_REQUIRED:
+            return (
+                "Context Latent is enabled. Upload the previous H3 "
+                ".safetensors file."
+            )
+        path = folder_paths.get_annotated_filepath(latent_file)
+        if not os.path.isfile(path):
+            return f"H3 Context Latent not found: {latent_file}"
+        if not latent_file.lower().endswith(".safetensors"):
+            return "H3 Motion Context latent must be a .safetensors file."
+        return True
+
+    @classmethod
+    def IS_CHANGED(cls, use_context_latent, latent_file):
+        if not use_context_latent:
+            return "disabled"
+        if not latent_file or latent_file == _UPLOAD_REQUIRED:
+            return float("NaN")
+        try:
+            path = folder_paths.get_annotated_filepath(latent_file)
+            return f"{path}:{os.stat(path).st_mtime_ns}"
+        except Exception:
+            return float("NaN")
+
+
 NODE_CLASS_MAPPINGS = {
     "H3LatentUploadPath": H3LatentUploadPath,
+    "H3OptionalLatentUploadLoader": H3OptionalLatentUploadLoader,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "H3LatentUploadPath": "H3 Latent Upload (Workflow)",
+    "H3OptionalLatentUploadLoader": "H3 Optional Context Latent Upload + Load",
 }
 
 WEB_DIRECTORY = "./web"
