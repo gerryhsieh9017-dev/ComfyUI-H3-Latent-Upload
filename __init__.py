@@ -206,13 +206,16 @@ def _safe_lora_name(filename):
     return name
 
 
-def _resolve_bearer_token(bearer_token):
-    """Prefer a session-only widget value, otherwise use the Machine Secret."""
+def _resolve_bearer_token(bearer_token, lora_url):
+    """Use the Machine Secret only for Hugging Face download hosts."""
 
     token = (bearer_token or "").strip()
     if token:
         return token
-    return os.environ.get(_HF_TOKEN_ENV, "").strip()
+    hostname = (urlparse(lora_url).hostname or "").lower()
+    if hostname == "huggingface.co" or hostname.endswith(".huggingface.co"):
+        return os.environ.get(_HF_TOKEN_ENV, "").strip()
+    return ""
 
 
 class H3ExternalLoRASettings:
@@ -392,7 +395,7 @@ class H3SafeExternalLoRAApplyModel:
         state_dict = self._load_or_download(
             lora_url.strip(),
             lora_save_name,
-            _resolve_bearer_token(bearer_token),
+            _resolve_bearer_token(bearer_token, lora_url),
         )
         patched_model, _ = comfy.sd.load_lora_for_models(
             model, None, state_dict, strength_model, 0

@@ -48,6 +48,8 @@ validation, and model patch in one node:
   I2VA/FL2VA and Ref2VA branches can reuse the same Machine Secret.
 - A non-empty `bearer_token` widget value is still supported for one session and
   takes priority over the Machine Secret.
+- The Machine Secret fallback is sent only to `huggingface.co` hosts. Public
+  Civitai or other external URLs receive no Hugging Face authorization header.
 - Never commit a workflow while a bearer token is present. Clear it after use.
 - HTTP 401/403, empty downloads, and invalid `.safetensors` files fail before
   sampling with a specific error and do not leave a partial cache file.
