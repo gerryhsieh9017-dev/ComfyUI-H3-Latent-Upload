@@ -305,8 +305,16 @@ class H3SafeExternalLoRAApplyModel:
     )
 
     @staticmethod
-    def _http_error(status):
+    def _http_error(status, url=""):
+        host = (urlparse(url).hostname or "").lower()
         if status in (401, 403):
+            if host == "civitai.red" or host.endswith(".civitai.red"):
+                return RuntimeError(
+                    "External LoRA download was denied by Civitai (HTTP %s). "
+                    "Use the direct /api/download/models/<version_id> URL. If "
+                    "the URL is correct, the remote service may be temporarily "
+                    "blocking automated downloads." % status
+                )
             return RuntimeError(
                 "External LoRA download was denied (HTTP %s). For a private "
                 "Hugging Face repository, configure the ComfyDeploy Machine Secret "
@@ -322,7 +330,13 @@ class H3SafeExternalLoRAApplyModel:
                 "External LoRA URL must be a direct http(s) .safetensors URL."
             )
 
-        headers = {}
+        # Some public download services (including Civitai) reject Python's
+        # default urllib user agent even though the same public URL works in a
+        # browser. Use an explicit, stable client identity and binary Accept.
+        headers = {
+            "User-Agent": "ComfyUI-H3-Latent-Upload/1.0",
+            "Accept": "application/octet-stream,*/*;q=0.8",
+        }
         if bearer_token:
             headers["Authorization"] = f"Bearer {bearer_token}"
 
@@ -334,7 +348,7 @@ class H3SafeExternalLoRAApplyModel:
             try:
                 response = urlopen(request, timeout=300)
             except HTTPError as exc:
-                raise self._http_error(exc.code) from exc
+                raise self._http_error(exc.code, url) from exc
             except URLError as exc:
                 raise RuntimeError(
                     f"External LoRA download could not connect: {exc.reason}"
