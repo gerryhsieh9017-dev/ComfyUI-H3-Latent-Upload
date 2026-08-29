@@ -20,6 +20,7 @@ except Exception:
 _UPLOAD_SUBFOLDER = "h3_latents"
 _UPLOAD_REQUIRED = "(upload required)"
 _LORA_CACHE_SUBFOLDER = "h3_external_loras"
+_HF_TOKEN_ENV = "H3_LORA_HF_TOKEN"
 
 
 def _safe_latent_name(filename):
@@ -205,6 +206,15 @@ def _safe_lora_name(filename):
     return name
 
 
+def _resolve_bearer_token(bearer_token):
+    """Prefer a session-only widget value, otherwise use the Machine Secret."""
+
+    token = (bearer_token or "").strip()
+    if token:
+        return token
+    return os.environ.get(_HF_TOKEN_ENV, "").strip()
+
+
 class H3ExternalLoRASettings:
     """Non-downloading UI bridge for URL, cache name, and optional HF token."""
 
@@ -230,8 +240,9 @@ class H3ExternalLoRASettings:
                         "default": "",
                         "multiline": False,
                         "tooltip": (
-                            "Private repo: paste a read-only token for this Session only. "
-                            "Do not Commit a workflow containing a token."
+                            "Private repo: leave blank to use the ComfyDeploy Machine "
+                            "Secret H3_LORA_HF_TOKEN. A session-only value entered here "
+                            "takes priority; never Commit a workflow containing a token."
                         ),
                     },
                 ),
@@ -295,8 +306,9 @@ class H3SafeExternalLoRAApplyModel:
         if status in (401, 403):
             return RuntimeError(
                 "External LoRA download was denied (HTTP %s). For a private "
-                "Hugging Face repository, paste a fine-grained/read token into "
-                "bearer_token for this Session. Do not Commit the token." % status
+                "Hugging Face repository, configure the ComfyDeploy Machine Secret "
+                "H3_LORA_HF_TOKEN with a fine-grained/read token, or paste a token "
+                "into bearer_token for this Session only. Do not Commit the token." % status
             )
         return RuntimeError("External LoRA download failed with HTTP %s." % status)
 
@@ -378,7 +390,9 @@ class H3SafeExternalLoRAApplyModel:
                 "Hugging Face resolve/main URL or turn Enable LoRA OFF."
             )
         state_dict = self._load_or_download(
-            lora_url.strip(), lora_save_name, bearer_token.strip()
+            lora_url.strip(),
+            lora_save_name,
+            _resolve_bearer_token(bearer_token),
         )
         patched_model, _ = comfy.sd.load_lora_for_models(
             model, None, state_dict, strength_model, 0

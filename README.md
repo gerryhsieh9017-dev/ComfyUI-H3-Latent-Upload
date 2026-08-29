@@ -42,8 +42,12 @@ validation, and model patch in one node:
 - `enable_lora = true`: downloads to `input/h3_external_loras`, first writing a
   `.part` file and then atomically renaming it. The file is loaded with ComfyUI's
   safe loader and applied directly to the connected model.
-- Public Hugging Face repositories need no token. A private repository needs a
-  fine-grained/read token in `bearer_token` for the current session.
+- Public Hugging Face repositories need no token. For a private repository,
+  configure the ComfyDeploy Machine Secret `H3_LORA_HF_TOKEN` with a
+  fine-grained/read token. Leave the workflow's `bearer_token` blank; both the
+  I2VA/FL2VA and Ref2VA branches can reuse the same Machine Secret.
+- A non-empty `bearer_token` widget value is still supported for one session and
+  takes priority over the Machine Secret.
 - Never commit a workflow while a bearer token is present. Clear it after use.
 - HTTP 401/403, empty downloads, and invalid `.safetensors` files fail before
   sampling with a specific error and do not leave a partial cache file.
