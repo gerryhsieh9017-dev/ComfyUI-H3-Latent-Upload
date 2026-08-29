@@ -53,6 +53,8 @@ validation, and model patch in one node:
 - Never commit a workflow while a bearer token is present. Clear it after use.
 - HTTP 401/403, empty downloads, and invalid `.safetensors` files fail before
   sampling with a specific error and do not leave a partial cache file.
+- `H3 External LoRA Download + Validate (No Generation)` downloads and safely
+  reads the file without loading an H3 model or running a sampler.
 
 This avoids relying on a Machine's first registered `models/loras` directory or
 on a `lora_name` COMBO value being present in its current model index.

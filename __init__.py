@@ -436,11 +436,58 @@ class H3SafeExternalLoRAApplyModel:
             return float("NaN")
 
 
+class H3ExternalLoRADownloadValidate(H3SafeExternalLoRAApplyModel):
+    """Download and safe-load an external LoRA without loading a model."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "lora_url": ("STRING", {"default": ""}),
+                "lora_save_name": (
+                    "STRING",
+                    {"default": "character_lora.safetensors"},
+                ),
+                "bearer_token": ("STRING", {"default": ""}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("validation_result",)
+    FUNCTION = "validate"
+    CATEGORY = "loaders/minimax"
+    OUTPUT_NODE = True
+    DESCRIPTION = (
+        "Downloads and safe-loads an external LoRA for diagnostics only. "
+        "It does not load an H3 model, sample, or generate media."
+    )
+
+    def validate(self, lora_url, lora_save_name, bearer_token):
+        if not lora_url or not lora_url.strip():
+            raise ValueError("External LoRA validation URL is empty.")
+        state_dict = self._load_or_download(
+            lora_url.strip(),
+            lora_save_name,
+            _resolve_bearer_token(bearer_token, lora_url),
+        )
+        cache_path = os.path.join(
+            folder_paths.get_input_directory(),
+            _LORA_CACHE_SUBFOLDER,
+            _safe_lora_name(lora_save_name),
+        )
+        result = (
+            "OK: safely loaded %s (%d bytes, %d tensors)."
+            % (os.path.basename(cache_path), os.path.getsize(cache_path), len(state_dict))
+        )
+        return {"ui": {"text": [result]}, "result": (result,)}
+
+
 NODE_CLASS_MAPPINGS = {
     "H3LatentUploadPath": H3LatentUploadPath,
     "H3OptionalLatentUploadLoader": H3OptionalLatentUploadLoader,
     "H3ExternalLoRASettings": H3ExternalLoRASettings,
     "H3SafeExternalLoRAApplyModel": H3SafeExternalLoRAApplyModel,
+    "H3ExternalLoRADownloadValidate": H3ExternalLoRADownloadValidate,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -448,6 +495,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "H3OptionalLatentUploadLoader": "H3 Optional Context Latent Upload + Load",
     "H3ExternalLoRASettings": "H3 External LoRA Settings (Safe)",
     "H3SafeExternalLoRAApplyModel": "H3 Safe External LoRA Apply (Model)",
+    "H3ExternalLoRADownloadValidate": "H3 External LoRA Download + Validate (No Generation)",
 }
 
 WEB_DIRECTORY = "./web"
